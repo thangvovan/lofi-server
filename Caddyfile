@@ -1,0 +1,11 @@
+# Only used by the "tls" compose profile. Caddy gets a Let's Encrypt certificate
+# on its own, so there is no certbot chore here.
+
+{$LOFI_DOMAIN} {
+	reverse_proxy lofi:8477 {
+		# Live audio must not be buffered. Without this Caddy holds bytes back
+		# waiting to fill a buffer, and the wallpaper sits in BUFFERING forever
+		# on a stream that never ends and so never fills anything.
+		flush_interval -1
+	}
+}

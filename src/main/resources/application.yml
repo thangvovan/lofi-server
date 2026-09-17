@@ -1,0 +1,33 @@
+server:
+  port: ${PORT:8477}
+  address: ${HOST:0.0.0.0}
+
+spring:
+  application:
+    name: lofi-server
+  mvc:
+    async:
+      # A listener holds its response open for hours. Tomcat's default async
+      # timeout would cut the audio off after 30 seconds, so it is disabled here
+      # rather than raised - there is no correct finite value for a live stream.
+      request-timeout: -1
+  threads:
+    virtual:
+      # One connection per listener, each blocked on a queue for hours. Virtual
+      # threads make that cost almost nothing.
+      enabled: true
+
+lofi:
+  ffmpeg: ${LOFI_FFMPEG:ffmpeg}
+  default-bitrate: ${LOFI_BITRATE:32}
+  cluster-millis: 1000
+  idle-grace-seconds: 15
+  resolve-ttl-seconds: 1800
+  subscriber-queue-size: 32
+
+logging:
+  level:
+    root: INFO
+    lofi: INFO
+  pattern:
+    console: "[lofi] %d{HH:mm:ss}  %-5level %logger{0} - %msg%n"

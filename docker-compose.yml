@@ -1,0 +1,43 @@
+# Runs the server on an Oracle Cloud Always Free VM.
+#
+#   docker compose up -d --build          plain HTTP on :8477
+#   docker compose --profile tls up -d    behind Caddy on :443, needs a domain
+#
+# HTTP is the default on purpose. The wallpaper is a file:// page, not an https
+# one, so it is not subject to mixed-content blocking and can pull audio from a
+# plain http origin. TLS is worth adding if you own a domain and would rather not
+# stream in the clear, but it is not a requirement for this to work.
+
+services:
+  lofi:
+    build: .
+    restart: unless-stopped
+    environment:
+      PORT: 8477
+      LOFI_BITRATE: 32
+    ports:
+      - "8477:8477"
+    # The JVM plus one ffmpeg measured about 125 MB with a station running, so
+    # this leaves room for several stations without letting a leak take the box.
+    mem_limit: 768m
+
+  caddy:
+    profiles: ["tls"]
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      # docker compose --profile tls up -d, with LOFI_DOMAIN set in .env
+      LOFI_DOMAIN: ${LOFI_DOMAIN:?set LOFI_DOMAIN in .env to use the tls profile}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - lofi
+
+volumes:
+  caddy_data:
+  caddy_config:
