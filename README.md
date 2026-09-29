@@ -8,7 +8,6 @@ client it was written for; [lofi-bot](../lofi-bot) is the other one.
 src/               the Spring Boot server
 Dockerfile         the server plus the ffmpeg it shells out to
 docker-compose.yml how it runs on the VM
-Caddyfile          only for the optional tls profile
 ```
 
 ## Why this exists
@@ -79,18 +78,18 @@ public half is in the VM's `authorized_keys`).
 On the VM itself:
 
 1. **Pick Ampere A1, not the AMD micro.** Always Free gives an A1 flex 2 OCPU /
-   12 GB against the micro's 1/8 OCPU / 1 GB, and `mem_limit` here is 768m. Both
+   12 GB against the micro's 1/8 OCPU / 1 GB, and `mem_limit` here is 1g. Both
    base images have `arm64`, so nothing needs changing for Arm. Always Free
    instances must be created in the tenancy's home region.
-2. **Open 8477 in two places.** Oracle's Ubuntu images ship iptables rules that
+2. **Open port 80 in two places.** Oracle's Ubuntu images ship iptables rules that
    reject everything but 22, so the console's security list is not enough:
 
    ```bash
-   sudo iptables -I INPUT 6 -p tcp --dport 8477 -j ACCEPT
+   sudo iptables -I INPUT 6 -p tcp --dport 80 -j ACCEPT
    sudo netfilter-persistent save
    ```
 
-   Then add an ingress rule for TCP 8477 in the subnet's security list or NSG.
+   Then add an ingress rule for TCP 80 in the subnet's security list or NSG.
 3. **Install Docker** and put the login in the `docker` group, or the deploy's
    `docker compose` fails on permissions:
 
@@ -102,13 +101,10 @@ On the VM itself:
 4. **Check `/api/resolve` before anything else.** This is the one step that can
    fail for a reason no configuration fixes.
 
-Plain HTTP is the default on purpose: the wallpaper is a `file://` page rather
-than an `https://` one, so it is not subject to mixed-content blocking and can
-pull audio from an `http://` origin. If you own a domain and would rather not
-stream in the clear, `docker compose --profile tls up -d` puts Caddy in front and
-it obtains its own certificate - that needs `LOFI_DOMAIN` in `.env`, an A record,
-and ports 80 and 443 open in both places. Let's Encrypt will not issue for a bare
-IP.
+Plain HTTP on purpose: the wallpaper is a `file://` page rather than an
+`https://` one, so it is not subject to mixed-content blocking and can pull audio
+from an `http://` origin. The server has no domain, and Let's Encrypt will not
+issue for a bare IP, so there is no TLS and no reverse proxy in front.
 
 ### Bandwidth
 
@@ -144,27 +140,13 @@ So the accepted window has both a floor and a ceiling, and no value survives
 indefinitely - `99.99.99` is a 404, not a shortcut. The third field is ignored
 entirely (`21.02.00`, `21.02.99` and `21.02.999` all answer 200).
 
-The version reads as `year.month.build`, so `21.02.35` is February 2026 and the
-floor currently sits exactly at a major boundary, one major behind the current
-one. If that pattern holds, the shipped value stops working when major 23 ships,
+The version reads as `year.week.build`, with the year counted from 2005, so
+`21.02.35` is the second week of 2026 - which is why a middle field of 41 can
+exist at all. The ceiling is the newest build YouTube has shipped, betas
+included, so it climbs week by week. The floor currently sits exactly at a
+major boundary, one major behind the current one. If that pattern holds, the shipped value stops working when major 23 ships,
 around January 2028. **400 means bump it; 404 means the value is too high.**
 
 The wallpaper's own station list has a separate `clientVersion` for the `WEB`
 client, which is only a date and needs no upkeep - it is built from the clock at
 runtime. That lives in lofi-wallpaper.
-
-## Installing the wallpaper
-
-`--install` registers the wallpaper with Wallpaper Engine and still lives in this
-jar. It finds the wallpaper by walking up from the jar, then up from the working
-directory, looking for a folder with `project.json` and `index.html` in it. Now
-that the two repos are separate, only the second of those finds anything, so run
-it from the wallpaper's folder:
-
-```bash
-cd ../lofi-wallpaper
-java -jar ../lofi-server/target/lofi-server.jar --install
-```
-
-`--install --link` makes a junction instead, for working on the wallpaper.
-`--uninstall` removes whichever of the two is there.

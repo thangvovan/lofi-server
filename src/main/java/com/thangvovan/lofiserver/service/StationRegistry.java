@@ -1,4 +1,7 @@
-package lofi;
+package com.thangvovan.lofiserver.service;
+
+import com.thangvovan.lofiserver.LofiProperties;
+import com.thangvovan.lofiserver.worker.StationStream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -12,27 +15,14 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
-/** Keeps at most one {@link StationStream} per station and retires idle ones. */
+/** 
+ * Keeps at most one {@link StationStream} per station and retires idle ones.
+ */
 @Service
 public class StationRegistry {
-
     private static final Logger log = LoggerFactory.getLogger(StationRegistry.class);
 
-    /**
-     * Futures rather than streams, so that two listeners arriving together share
-     * one transcode.
-     *
-     * Holding the stream directly does not work: creating one means resolving and
-     * spawning ffmpeg, which is far too slow to do inside a map function, and
-     * doing it outside leaves a window where both callers see an empty map and
-     * both start a process. Checking "is the existing one alive?" does not close
-     * that window either - a stream that has been constructed but not yet started
-     * has no process, so it reports not alive and gets replaced. The observable
-     * result was two ffmpeg processes for one station.
-     *
-     * computeIfAbsent runs the creation exactly once per key; everyone else waits
-     * on the same future.
-     */
+    // Futures rather than streams
     private final Map<String, CompletableFuture<StationStream>> streams = new ConcurrentHashMap<>();
 
     private final YoutubeResolver resolver;
@@ -43,27 +33,24 @@ public class StationRegistry {
         this.props = props;
     }
 
-    StationStream acquire(String videoId, int bitrate) throws IOException {
+    public StationStream acquire(String videoId, int bitrate) throws IOException {
         String key = videoId + "@" + bitrate;
 
-        // At most one retry: the only way round the loop is finding a stream that
-        // died between the lookup and the join, and a second death means the
-        // station is genuinely broken rather than racing.
+        // At most one retry
         for (int tries = 0; tries < 2; tries++) {
-            CompletableFuture<StationStream> pending = streams.computeIfAbsent(key,
-                    k -> CompletableFuture.supplyAsync(() -> open(videoId, bitrate)));
+            CompletableFuture<StationStream> pending = streams.computeIfAbsent(key, k -> CompletableFuture.supplyAsync(() -> open(videoId, bitrate)));
             try {
                 StationStream stream = pending.join();
                 if (stream.alive()) return stream;
+                stream.stop(); // reap() never sees it once it leaves the map
                 streams.remove(key, pending);
-                resolver.evict(videoId);        // the URL it started from is suspect now
+                resolver.evict(videoId); // the URL is suspect now
             } catch (CompletionException e) {
                 streams.remove(key, pending);
-                Throwable cause = e.getCause() != null ? e.getCause() : e;
-                throw new IOException(cause.getMessage(), cause);
+                throw new IOException("Station " + key + " will not stay up");
             }
         }
-        throw new IOException("station " + key + " will not stay up");
+        throw new IOException("Station " + key + " will not stay up");
     }
 
     private StationStream open(String videoId, int bitrate) {
@@ -80,12 +67,12 @@ public class StationRegistry {
         }
     }
 
-    /** Shuts down stations nobody has listened to for a while. */
+    // Shuts down stations nobody has listened
     @Scheduled(fixedDelay = 5000)
     void reap() {
         streams.entrySet().removeIf(entry -> {
             CompletableFuture<StationStream> pending = entry.getValue();
-            if (!pending.isDone()) return false;             // still starting up
+            if (!pending.isDone()) return false; // still starting up
             if (pending.isCompletedExceptionally()) return true;
 
             StationStream stream = pending.join();
@@ -97,7 +84,7 @@ public class StationRegistry {
                     String key = entry.getKey();
                     resolver.evict(key.substring(0, key.indexOf('@')));
                 }
-                log.info("released {}", entry.getKey());
+                log.info("Released {}", entry.getKey());
             }
             return finished;
         });
@@ -105,8 +92,8 @@ public class StationRegistry {
 
     public Map<String, Integer> snapshot() {
         return streams.entrySet().stream()
-                .filter(e -> e.getValue().isDone() && !e.getValue().isCompletedExceptionally())
-                .filter(e -> e.getValue().join().alive())
-                .collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue().join().listeners()));
+            .filter(e -> e.getValue().isDone() && !e.getValue().isCompletedExceptionally())
+            .filter(e -> e.getValue().join().alive())
+            .collect(Collectors.toMap(e -> e.getKey(), e -> e.getValue().join().listeners()));
     }
 }

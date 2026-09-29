@@ -63,4 +63,4 @@ jobs:
           # is the signal that a deploy broke something, so it must not be skipped.
           sleep 25
           curl -fsS --max-time 10 \
-            "http://${{ secrets.SSH_HOST }}:8477/api/health"
+            "http://${{ secrets.SSH_HOST }}/api/health"
