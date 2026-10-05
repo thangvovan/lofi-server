@@ -71,34 +71,44 @@ container there. The build also runs in CI, but only as a check - the VM rebuild
 its own image, because shipping a 20 MB jar on every push is slower than letting
 Docker reuse its layer cache on the far end.
 
-Set as repository secrets: `SSH_HOST` (the VM's public IP), `SSH_USER` (`ubuntu`
-on an Ubuntu image, `opc` on Oracle Linux) and `SSH_KEY` (the private key whose
-public half is in the VM's `authorized_keys`).
+Set as repository secrets: `SSH_HOST` (the VM's public IP), `SSH_USER` (the
+image's login - `opc` or `almalinux` on AlmaLinux, shown on the image's page) and
+`SSH_KEY` (the private key whose public half is in the VM's `authorized_keys`).
+
+The VM runs AlmaLinux 9, from the console's Partner images.
 
 On the VM itself:
 
-1. **Pick Ampere A1, not the AMD micro.** Always Free gives an A1 flex 2 OCPU /
-   12 GB against the micro's 1/8 OCPU / 1 GB, and `mem_limit` here is 1g. Both
-   base images have `arm64`, so nothing needs changing for Arm. Always Free
-   instances must be created in the tenancy's home region.
-2. **Open port 80 in two places.** Oracle's Ubuntu images ship iptables rules that
-   reject everything but 22, so the console's security list is not enough:
+1. **Shape.** The AMD micro (1/8 OCPU, 1 GB) holds about three stations at once;
+   Ampere A1 (up to 4 OCPU / 24 GB free) holds far more. Both base images have
+   `arm64`, so nothing needs changing for Arm. Always Free instances must be
+   created in the tenancy's home region.
+2. **Add swap first.** dnf and the Maven build both need more than a 1 GB micro
+   has free, and without swap either can be killed halfway:
 
    ```bash
-   sudo iptables -I INPUT 6 -p tcp --dport 80 -j ACCEPT
-   sudo netfilter-persistent save
+   sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile && echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+   ```
+
+3. **Open port 80 in two places.** AlmaLinux runs firewalld, so the console's
+   security list alone is not enough:
+
+   ```bash
+   sudo firewall-cmd --permanent --add-port=80/tcp && sudo firewall-cmd --reload
    ```
 
    Then add an ingress rule for TCP 80 in the subnet's security list or NSG.
-3. **Install Docker** and put the login in the `docker` group, or the deploy's
-   `docker compose` fails on permissions:
+4. **Install Docker and rsync** and put the login in the `docker` group, or the
+   deploy's `docker compose` fails on permissions. `get.docker.com` does not
+   support AlmaLinux, so this uses Docker's RHEL repository; rsync is what the
+   deploy copies the sources with:
 
    ```bash
-   curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker ubuntu
+   sudo dnf -y install dnf-plugins-core rsync && sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo && sudo dnf -y install docker-ce docker-ce-cli containerd.io docker-compose-plugin && sudo systemctl enable --now docker && sudo usermod -aG docker "$USER"
    ```
 
    Log out and back in for the group to take effect.
-4. **Check `/api/resolve` before anything else.** This is the one step that can
+5. **Check `/api/resolve` before anything else.** This is the one step that can
    fail for a reason no configuration fixes.
 
 Plain HTTP on purpose: the wallpaper is a `file://` page rather than an

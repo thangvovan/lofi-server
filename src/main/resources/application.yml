@@ -4,7 +4,7 @@ lofi:
   allowed-bitrates: 32, 48, 64, 96
   resolve-ttl-seconds: 1800
   cluster-millis: 1000
-  idle-grace-seconds: 300
+  idle-grace-seconds: 30
   subscriber-queue-size: 64
 
 server:

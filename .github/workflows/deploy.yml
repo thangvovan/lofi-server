@@ -7,7 +7,7 @@
 #
 # Secrets to set in the repository (Settings -> Secrets -> Actions):
 #   SSH_HOST  the VM's public IP
-#   SSH_USER  ubuntu on an Ubuntu image, opc on Oracle Linux
+#   SSH_USER  the image's login: opc or almalinux on AlmaLinux
 #   SSH_KEY   the private key whose public half is in the VM's authorized_keys
 
 name: deploy

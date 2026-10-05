@@ -1,7 +1,7 @@
 services:
   lofi:
     build: .
-    mem_limit: 2g
+    mem_limit: 512m
     restart: unless-stopped
     environment:
       PORT: 80
