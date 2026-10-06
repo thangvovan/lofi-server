@@ -2,7 +2,6 @@ package com.thangvovan.lofiserver.controller;
 
 import com.thangvovan.lofiserver.LofiProperties;
 import com.thangvovan.lofiserver.service.StationRegistry;
-import com.thangvovan.lofiserver.service.YoutubeResolver;
 import com.thangvovan.lofiserver.worker.StationStream;
 
 import org.slf4j.Logger;
@@ -31,12 +30,10 @@ public class StreamController {
     private static final Pattern VIDEO_ID = Pattern.compile("[\\w-]{11}");
 
     private final StationRegistry registry;
-    private final YoutubeResolver resolver;
     private final LofiProperties props;
 
-    StreamController(StationRegistry registry, YoutubeResolver resolver, LofiProperties props) {
+    StreamController(StationRegistry registry, LofiProperties props) {
         this.registry = registry;
-        this.resolver = resolver;
         this.props = props;
     }
 
@@ -46,20 +43,6 @@ public class StreamController {
             "ok", true,
             "stations", registry.snapshot()
         );
-    }
-
-    // Resolving on its own, for diagnosing a host: this is what fails first when YouTube
-    // blocks the server's IP, and it costs no bandwidth worth counting
-    @GetMapping("/api/resolve")
-    public ResponseEntity<Map<String, Object>> resolve(@RequestParam("id") String id) {
-        if (!VIDEO_ID.matcher(id).matches()) {
-            return ResponseEntity.badRequest().body(Map.of("ok", false, "error", "bad video id"));
-        }
-        try {
-            return ResponseEntity.ok(Map.of("ok", true, "url", resolver.resolveHls(id)));
-        } catch (Exception e) {
-            return ResponseEntity.status(502).body(Map.of("ok", false, "error", String.valueOf(e.getMessage())));
-        }
     }
 
     @GetMapping("/stream")
