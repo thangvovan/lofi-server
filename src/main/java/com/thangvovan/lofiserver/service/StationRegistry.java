@@ -47,7 +47,8 @@ public class StationRegistry {
                 resolver.evict(videoId); // the URL is suspect now
             } catch (CompletionException e) {
                 streams.remove(key, pending);
-                throw new IOException("Station " + key + " will not stay up");
+                Throwable cause = e.getCause() != null ? e.getCause() : e;
+                throw new IOException(cause.getMessage(), cause);
             }
         }
         throw new IOException("Station " + key + " will not stay up");

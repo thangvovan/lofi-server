@@ -90,12 +90,18 @@ public class YoutubeResolver {
 
         HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
         if (res.statusCode() != 200) {
-            throw new IOException("Player API returned error");
+            // 400 means the client version is too old, 404 that it is too new
+            throw new IOException("Player API answered http " + res.statusCode() + " for client " + version);
         }
         JsonNode root = json.readTree(res.body());
 
         JsonNode hls = root.path("streamingData").path("hlsManifestUrl");
-        if (hls.isMissingNode() || hls.asText().isBlank()) throw new IOException("No Hls Manifest Url");
+        if (hls.isMissingNode() || hls.asText().isBlank()) {
+            // LOGIN_REQUIRED here nearly always means YouTube treats the host's IP as a datacenter
+            JsonNode playability = root.path("playabilityStatus");
+            throw new IOException("No HLS manifest: playabilityStatus=" + playability.path("status").asText("unknown")
+                + ", reason=" + playability.path("reason").asText(""));
+        }
 
         String url = hls.asText();
         cache.put(videoId, new Cached(url, System.currentTimeMillis()));
