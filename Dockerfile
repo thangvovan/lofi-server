@@ -19,4 +19,4 @@ ENV PORT=80
 EXPOSE 80
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD curl -fsS "http://127.0.0.1:${PORT}/api/health" || exit 1
-ENTRYPOINT ["java", "-Xmx512m", "-jar", "app.jar"]
+ENTRYPOINT ["sh", "-c", "exec java -Xmx${MEMORY:-512m} -jar app.jar"]

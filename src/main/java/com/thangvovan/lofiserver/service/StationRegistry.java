@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -26,10 +27,12 @@ public class StationRegistry {
     private final Map<String, CompletableFuture<StationStream>> streams = new ConcurrentHashMap<>();
 
     private final YoutubeResolver resolver;
+    private final StationNames names;
     private final LofiProperties props;
 
-    StationRegistry(YoutubeResolver resolver, LofiProperties props) {
+    StationRegistry(YoutubeResolver resolver, StationNames names, LofiProperties props) {
         this.resolver = resolver;
+        this.names = names;
         this.props = props;
     }
 
@@ -58,6 +61,7 @@ public class StationRegistry {
             String hls = resolver.resolveHls(videoId);
             StationStream stream = new StationStream(videoId, bitrate, props.getSubscriberQueueSize());
             stream.start(hls, props);
+            names.name(videoId); // reads the playlist now if this station is not in it yet
             return stream;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -90,10 +94,15 @@ public class StationRegistry {
         });
     }
 
+    // Listeners by station name
     public Map<String, Integer> snapshot() {
         return streams.entrySet().stream()
             .filter(e -> e.getValue().isDone() && !e.getValue().isCompletedExceptionally())
             .filter(e -> e.getValue().join().alive())
-            .collect(Collectors.toMap(e -> e.getKey(), e -> e.getValue().join().listeners()));
+            .collect(Collectors.toMap(
+                e -> names.name(e.getKey().substring(0, e.getKey().indexOf('@'))),
+                e -> e.getValue().join().listeners(),
+                Integer::sum,
+                TreeMap::new));
     }
 }

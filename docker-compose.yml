@@ -1,9 +1,11 @@
 services:
   lofi:
     build: .
-    mem_limit: 2g
+    # Both written to .env by lofi / lofi.cmd / lofi.ps1 from MEMORY in lofi.conf.
+    mem_limit: ${LOFI_MEM_LIMIT:-2048m}
     restart: unless-stopped
     environment:
       PORT: 80
+      MEMORY: ${LOFI_MEMORY:-512m}
     ports:
       - "80:80"

@@ -1,0 +1,371 @@
+#!/usr/bin/env bash
+# runs the lofi server on macOS and Linux
+#   ./lofi
+#   ./lofi start
+#   ./lofi stop
+#   ./lofi autostart on|off
+#   ./lofi status
+#   ./lofi config
+#   ./lofi set KEY VALUE
+
+set -u
+
+ROOT=$(cd "$(dirname "$0")" && pwd)
+CONF="$ROOT/lofi.conf"
+LOG_DIR="$ROOT/logs"
+JAR="$ROOT/target/lofi-server.jar"
+LOG="$LOG_DIR/server.log"
+ERR_LOG="$LOG_DIR/server.err.log"
+SELF="$ROOT/$(basename "$0")"
+
+mkdir -p "$LOG_DIR"
+
+if [ -t 1 ]; then
+  RED=$'\033[31m';
+  GREEN=$'\033[32m';
+  YELLOW=$'\033[33m';
+  CYAN=$'\033[36m'
+  GRAY=$'\033[90m';
+  BOLD=$'\033[1m';
+  INV=$'\033[30;46m';
+  RESET=$'\033[0m'
+else
+  RED=;
+  GREEN=;
+  YELLOW=;
+  CYAN=;
+  GRAY=;
+  BOLD=;
+  INV=;
+  RESET=
+fi
+
+# Settings
+SETTINGS="PORT;7071;server.port;^[0-9]{1,5}$
+IDLE_GRACE_SECONDS;300;lofi.idle-grace-seconds;^[0-9]+$
+MEMORY;512;;^[0-9]+$"
+
+setting_keys() { printf '%s\n' "$SETTINGS" | cut -d';' -f1; }
+setting_values() { printf '%s\n' "$SETTINGS" | awk -F';' -v k="$1" -v n="$2" '$1==k {print $n}'; }
+
+conf_get() {
+  local v=""
+  [ -f "$CONF" ] && v=$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$CONF" | tail -n1 | tr -d '\r')
+  [ -n "$v" ] || v=$(setting_values "$1" 2)
+  if [ "$1" = MEMORY ]; then
+    case "$v" in
+      *[gG]) v=$(( ${v%?} * 1024 )) ;;
+      *[mM]) v=${v%?} ;;
+    esac
+  fi
+  printf '%s' "$v"
+}
+
+conf_write_all() {
+  local tmp="$CONF.tmp" k v
+  printf '%s\n' '# lofi settings' > "$tmp"
+  for k in $(setting_keys); do
+    if [ "$k" = "${1:-}" ]; then v="$2"; else v=$(conf_get "$k"); fi
+    printf '%s=%s\n' "$k" "$v" >> "$tmp"
+  done
+  mv "$tmp" "$CONF"
+  write_docker_env
+}
+
+mem_limit_mb() { echo $(( $(conf_get MEMORY) * 4 )); }
+
+write_docker_env() {
+  local env="$ROOT/.env" tmp="$ROOT/.env.tmp"
+  if [ -f "$env" ]; then grep -v -E '^LOFI_(MEMORY|MEM_LIMIT)=' "$env" > "$tmp"; else : > "$tmp"; fi
+  printf 'LOFI_MEMORY=%sm\nLOFI_MEM_LIMIT=%sm\n' "$(conf_get MEMORY)" "$(mem_limit_mb)" >> "$tmp"
+  mv "$tmp" "$env"
+}
+
+conf_check() {
+  local k v pattern
+  k=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]'); v="$2"
+  pattern=$(setting_values "$k" 4)
+  if [ -z "$pattern" ]; then echo "${RED}Unknown setting '$k'.${RESET}"; return 1; fi
+  if ! printf '%s' "$v" | grep -Eq "$pattern"; then echo "${RED}Bad value '$v' for $k.${RESET}"; return 1; fi
+  if [ "$k" = PORT ] && { [ "$v" -lt 1 ] || [ "$v" -gt 65535 ]; }; then echo "${RED}PORT must be 1-65535.${RESET}"; return 1; fi
+  return 0
+}
+
+conf_set() {
+  local k v
+  conf_check "$1" "$2" || return 1
+  k=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]'); v="$2"
+  conf_write_all "$k" "$v"
+  if server_pid >/dev/null; then
+    stop_server >/dev/null
+    start_server Restarting || return 1
+  fi
+  return 0
+}
+
+show_config() {
+  local k
+  for k in $(setting_keys); do printf '%-22s %-8s\n' "$k" "$(conf_get "$k")"; done
+}
+
+# Server
+server_pid() {
+  local pattern pid
+  pattern=$(printf '%s' "$JAR" | sed 's/[][\\.*^$()+?{}|]/\\&/g')
+  pid=$(pgrep -f -- "$pattern" | head -n1)
+  [ -n "$pid" ] && echo "$pid"
+}
+
+health() { curl -fsS -m 2 "http://127.0.0.1:$(conf_get PORT)/api/health" 2>/dev/null; }
+
+do_build() {
+  command -v mvn >/dev/null || { echo "${RED}Maven is not on PATH.${RESET}"; return 1; }
+  echo "Building the server jar..."
+  (cd "$ROOT" && mvn -q -DskipTests package) || { echo "${RED}Build failed.${RESET}"; return 1; }
+  echo "${GREEN}Build done.${RESET}"
+}
+
+start_server() {
+  local label="${1:-Starting}" tool port k prop i
+  if server_pid >/dev/null; then echo "Server already running."; return 0; fi
+  for tool in java ffmpeg curl; do
+    command -v "$tool" >/dev/null || { echo "${RED}$tool is not on PATH.${RESET}"; return 1; }
+  done
+  [ -f "$JAR" ] || do_build || return 1
+
+  port=$(conf_get PORT)
+  if [ "$port" -lt 1024 ] && [ "$(id -u)" -ne 0 ]; then
+    echo "${YELLOW}Port $port needs root privileges.${RESET}"
+    return 1
+  fi
+
+  set -- "-Xmx$(conf_get MEMORY)m" -jar "$JAR"
+  for k in $(setting_keys); do
+    prop=$(setting_values "$k" 3)
+    [ -n "$prop" ] && set -- "$@" "--$prop=$(conf_get "$k")"
+  done
+
+  (cd "$ROOT" && nohup java "$@" > "$LOG" 2> "$ERR_LOG" < /dev/null &)
+
+  printf '%s' "$label"
+  i=0
+  while [ $i -lt 30 ]; do
+    if health >/dev/null; then echo; echo "${GREEN}Server up.${RESET}"; return 0; fi
+    [ $i -gt 2 ] && ! server_pid >/dev/null && break
+    sleep 1; printf '.'; i=$((i + 1))
+  done
+  echo; echo "${RED}Server down.${RESET}"
+  return 1
+}
+
+stop_server() {
+  local pid i
+  pid=$(server_pid) || { echo "Server not running."; return 0; }
+  printf 'Stopping'
+  pkill -KILL -P "$pid" 2>/dev/null
+  kill -KILL "$pid" 2>/dev/null
+  i=0
+  while kill -0 "$pid" 2>/dev/null && [ $i -lt 10 ]; do sleep 1; printf '.'; i=$((i + 1)); done
+  echo; echo "Server stopped."
+}
+
+show_status() {
+  local pid h
+  pid=$(server_pid)
+  if h=$(health); then
+    echo "Server ${GREEN}up${RESET}"
+    printf '%s\n' "$h" | sed -n 's/.*"stations":{\([^}]*\)}.*/\1/p' | tr ',' '\n' | tr -d '"' | sed '/^$/d' |
+      while IFS=: read -r name count; do echo "  ${CYAN}♪${RESET} $name  $count listening"; done
+  else
+    echo "Server ${RED}down${RESET}"
+  fi
+  if autostart_enabled; then echo "Autostart: ${GREEN}on${RESET}"; else echo "Autostart: ${RED}off${RESET}"; fi
+  echo "${GRAY}Port $(conf_get PORT)   Idle grace second $(conf_get IDLE_GRACE_SECONDS)   Memory $(conf_get MEMORY)${RESET}"
+}
+
+# Autostart
+PLIST="$HOME/Library/LaunchAgents/com.lofi.server.plist"
+SERVICE="$HOME/.config/systemd/user/lofi.service"
+DESKTOP="$HOME/.config/autostart/lofi.desktop"
+
+is_mac() { [ "$(uname -s)" = Darwin ]; }
+has_systemd_user() { command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1; }
+
+autostart_enabled() {
+  if is_mac; then [ -f "$PLIST" ]; return; fi
+  [ -f "$DESKTOP" ] && return 0
+  [ -f "$SERVICE" ] && systemctl --user is-enabled lofi.service >/dev/null 2>&1
+}
+
+autostart_on() {
+  if is_mac; then
+    mkdir -p "$(dirname "$PLIST")"
+    cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.lofi.server</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/bash</string><string>$SELF</string><string>start</string></array>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$PATH</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>AbandonProcessGroup</key><true/>
+</dict>
+</plist>
+EOF
+    echo "Autostart: ${GREEN}on${RESET}"
+  elif has_systemd_user; then
+    mkdir -p "$(dirname "$SERVICE")"
+    cat > "$SERVICE" <<EOF
+[Unit]
+Description=Lofi server
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment="PATH=$PATH"
+ExecStart=/bin/bash "$SELF" start
+ExecStop=/bin/bash "$SELF" stop
+
+[Install]
+WantedBy=default.target
+EOF
+    systemctl --user daemon-reload
+    systemctl --user enable lofi.service >/dev/null 2>&1 || { echo "${RED}systemctl --user enable failed${RESET}"; return 1; }
+    echo "Autostart: ${GREEN}on${RESET}"
+  else
+    mkdir -p "$(dirname "$DESKTOP")"
+    printf '[Desktop Entry]\nType=Application\nName=Lofi server\nExec=/bin/bash "%s" start\nX-GNOME-Autostart-enabled=true\n' "$SELF" > "$DESKTOP"
+    echo "Autostart: ${GREEN}on${RESET}"
+  fi
+}
+
+autostart_off() {
+  if is_mac; then
+    launchctl unload "$PLIST" 2>/dev/null
+    rm -f "$PLIST"
+  elif [ -f "$SERVICE" ]; then
+    systemctl --user disable lofi.service >/dev/null 2>&1
+    rm -f "$SERVICE"
+    systemctl --user daemon-reload
+  else
+    rm -f "$DESKTOP"
+  fi
+  echo "Autostart: ${RED}off${RESET}"
+}
+
+# Menu
+read_key() {
+  local k rest
+  IFS= read -rsn1 k || { echo esc; return 0; }
+  case "$k" in
+    $'\e')
+      IFS= read -rsn2 -t 1 rest
+      case "$rest" in 
+        '[A'|'OA') echo up ;;
+        '[B'|'OB') echo down ;;
+        *) echo esc ;; 
+      esac ;;
+    '') echo enter ;;
+    q|Q) echo esc ;;
+    k) echo up ;;
+    j) echo down ;;
+    [0-9]) echo "$k" ;;
+  esac
+}
+
+draw_choice() {
+  local title="$1" sel="$2" header="$3" i=0 item
+  shift 3
+  clear
+  if [ -n "$title" ]; then echo "  ${GRAY}$title${RESET}"; else echo "  ${CYAN}${BOLD}♪ Lofi Server${RESET}"; fi
+  echo
+  for item in "$@"; do
+    if [ $i -eq "$sel" ]; then
+      echo "  ${INV} ▸ ${item//$RESET/$INV} ${RESET}"
+    else
+      echo "    $item"
+    fi
+    i=$((i + 1))
+  done
+}
+
+wait_key() { IFS= read -rsn1 _; }
+
+settings_menu() {
+  local sel=0 keys n key k v items out
+  while :; do
+    keys=$(setting_keys)
+    n=$(printf '%s\n' "$keys" | wc -l | tr -d ' ')
+    items=()
+    for k in $keys; do items+=("$(printf '%-22s %-6s' "$k" "$(conf_get "$k")")"); done
+    items+=("Back")
+    draw_choice settings "$sel" "" "${items[@]}"
+    key=$(read_key)
+    case "$key" in
+      up) sel=$(( (sel + n) % (n + 1) )) ;;
+      down) sel=$(( (sel + 1) % (n + 1) )) ;;
+      esc) return ;;
+      enter)
+        [ "$sel" -eq "$n" ] && return
+        k=$(printf '%s\n' "$keys" | sed -n "$((sel + 1))p")
+        echo
+        printf '%s: ' "$k"
+        IFS= read -r v
+        if [ -n "$v" ]; then
+          if out=$(conf_check "$k" "$v"); then
+            conf_set "$k" "$v" || wait_key
+          else
+            echo "$out"; wait_key
+          fi
+        fi ;;
+    esac
+  done
+}
+
+menu() {
+  local sel=0 key server auto running out count=5
+  while :; do
+    if server_pid >/dev/null; then running=1; server="Stop server"; else running=0; server="Start server"; fi
+    if autostart_enabled; then auto="Autostart: ${GREEN}on${RESET}"; else auto="Autostart: ${RED}off${RESET}"; fi
+    draw_choice "" "$sel" "" "$server" "$auto" "Server status" "Settings" "Quit"
+    key=$(read_key)
+    case "$key" in
+      up) sel=$(( (sel + count - 1) % count )); continue ;;
+      down) sel=$(( (sel + 1) % count )); continue ;;
+      esc) clear; return ;;
+      [1-5]) sel=$((key - 1)) ;;
+      enter) ;;
+      *) continue ;;
+    esac
+    case $sel in
+      0)
+        clear
+        if [ $running -eq 1 ]; then stop_server; else start_server || wait_key; fi ;;
+      1)
+        if autostart_enabled; then autostart_off >/dev/null 2>&1
+        else out=$(autostart_on 2>&1) || { echo "${RED}$out${RESET}"; wait_key; }; fi ;;
+      2) clear; show_status; wait_key ;;
+      3) settings_menu ;;
+      4) clear; return ;;
+    esac
+  done
+}
+
+# Commands
+case "${1:-}" in
+  start) start_server ;;
+  stop) stop_server ;;
+  autostart)
+    case "${2:-}" in
+      on) autostart_on ;;
+      off) autostart_off ;;
+      *) if autostart_enabled; then echo "Autostart: ${GREEN}on${RESET}"; else echo "Autostart: ${RED}off${RESET}"; fi ;;
+    esac ;;
+  status) show_status ;;
+  config) show_config ;;
+  set) [ $# -eq 3 ] || { exit 1; }; conf_set "$2" "$3" ;;
+  *) menu ;;
+esac

@@ -32,6 +32,31 @@ mvn package -DskipTests
 java -jar target/lofi-server.jar
 ```
 
+### Managing it without Docker
+
+Three standalone scripts do the same job, one per shell - none calls another:
+`lofi.cmd` (cmd), `lofi.ps1` (PowerShell), `lofi` (bash, macOS and Linux).
+They need Java 21, Maven, ffmpeg and curl on `PATH`.
+
+```bash
+./lofi
+```
+
+With no arguments each opens a menu - start or stop the server, turn autostart
+on or off, show the server's status, change settings. As commands: `start`, `stop`, `status`, `config`, `set KEY VALUE` and
+`autostart on|off`.
+
+| Setting | Default | |
+|---|---|---|
+| `PORT` | 80 | HTTP port |
+| `MEMORY` | 512m | Java heap limit (`-Xmx`) |
+| `IDLE_GRACE_SECONDS` | 300 | keep a station after its last listener |
+
+Settings are kept in `lofi.conf`, shared by all three, and passed to the server
+as it starts - a change needs a restart, not a rebuild. Autostart is a `Run`
+registry value on Windows, a LaunchAgent on macOS, and a systemd user unit on
+Linux (an XDG autostart entry without systemd). Logs go to `logs/`.
+
 Or in Docker, which brings its own ffmpeg:
 
 ```bash
