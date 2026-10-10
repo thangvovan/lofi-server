@@ -20,6 +20,7 @@ set "ERR_LOG=%LOG_DIR%\server.err.log"
 set "RUN_KEY=HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 set "RUN_NAME=LofiServer"
 set "SETTINGS=PORT IDLE_GRACE_SECONDS MEMORY"
+set "DRAIN_SECONDS=3"
 
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 
@@ -40,7 +41,7 @@ set "ARG3=%3"
 set "ARG4=%4"
 if "%~1"=="start"     call :start_server & goto :end
 if "%~1"=="stop"      call :stop_server & goto :end
-if "%~1"=="status"    call :show_status & goto :end
+if "%~1"=="status"    call :watch_status & goto :end
 if "%~1"=="config"    call :show_config & goto :end
 if "%~1"=="set" (
     if not defined ARG3 goto :fail
@@ -105,7 +106,7 @@ set "CFG_%KEY%=%VAL%"
 call :write_config
 call :server_pid
 if defined PID (
-    call :stop_server >nul
+    call :stop_server quick >nul
     call :start_server Restarting || exit /b 1
 )
 exit /b 0
@@ -201,7 +202,27 @@ echo(
 echo %RED%Server down.%RESET%
 exit /b 1
 
+:listeners
+set /a "LISTEN=0"
+call :status_fetch
+if not defined HEALTH exit /b 0
+set "S=!HEALTH:*"stations":{=!"
+if "!S:~0,1!"=="}" exit /b 0
+for /f "delims=}" %%a in ("!S!") do set "S=%%a"
+set "S=!S:"=!"
+:listeners_next
+set "REST="
+for /f "tokens=1* delims=," %%a in ("!S!") do (
+    for /f "tokens=2 delims=:" %%y in ("%%a") do set /a "LISTEN+=%%y"
+    set "REST=%%b"
+)
+set "S=!REST!"
+if defined S goto :listeners_next
+exit /b 0
+
 :stop_server
+set /a "LISTEN=0"
+if not "%~1"=="quick" call :listeners
 call :server_pid
 if not defined PID call :java_pid
 if not defined PID (echo Server not running.& exit /b 0)
@@ -216,14 +237,35 @@ ping -n 2 127.0.0.1 >nul
 set /a "I+=1"
 if %I% LSS 10 goto :stop_wait
 :stop_done
+if %LISTEN% GTR 0 for /l %%i in (1,1,%DRAIN_SECONDS%) do (ping -n 2 127.0.0.1 >nul & <nul set /p "=.")
 echo(
 echo Server stopped.
 exit /b 0
 
-:show_status
+:watch_status
+timeout /t 0 /nobreak >nul 2>&1 || (call :status_fetch & call :status_print & exit /b 0)
+set "SHOWN="
+:watch_loop
+call :load_config
+call :status_fetch
+call :autostart_enabled
+set "NOW=!HEALTH!|%AUTO%|%CFG_PORT%|%CFG_IDLE_GRACE_SECONDS%|%CFG_MEMORY%"
+if not "!NOW!"=="!SHOWN!" (
+    set "SHOWN=!NOW!"
+    cls
+    call :status_print
+)
+powershell -NoProfile -Command "$e=[DateTime]::Now.AddSeconds(1); while([DateTime]::Now -lt $e){ if([Console]::KeyAvailable){ [void][Console]::ReadKey($true); exit 1 }; Start-Sleep -Milliseconds 50 }"
+if errorlevel 1 exit /b 0
+goto :watch_loop
+
+:status_fetch
 call :server_pid
 set "HEALTH="
 if defined PID for /f "delims=" %%h in ('curl -fs -m 2 "http://127.0.0.1:%CFG_PORT%/api/health" 2^>nul') do set "HEALTH=%%h"
+exit /b 0
+
+:status_print
 if not defined HEALTH (
     echo Server %RED%down%RESET%
     goto :status_autostart
@@ -294,7 +336,7 @@ choice /c 12340 /n /m "  Choose 0-4: "
 set "PICK=%ERRORLEVEL%"
 if "%PICK%"=="5" cls & exit /b 0
 if "%PICK%"=="4" goto :settings_menu
-if "%PICK%"=="3" cls & call :show_status & pause >nul & goto :menu
+if "%PICK%"=="3" call :watch_status & goto :menu
 if "%PICK%"=="2" (
     if "%AUTO%"=="on" (call :autostart_off >nul) else (
         call :autostart_on >nul || (echo %RED%could not write the Run key%RESET%& pause >nul)
