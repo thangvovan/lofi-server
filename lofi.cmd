@@ -40,7 +40,7 @@ set "ARG3=%3"
 set "ARG4=%4"
 if "%~1"=="start"     call :start_server & goto :end
 if "%~1"=="stop"      call :stop_server & goto :end
-if "%~1"=="status"    call :show_status & goto :end
+if "%~1"=="status"    call :watch_status & goto :end
 if "%~1"=="config"    call :show_config & goto :end
 if "%~1"=="set" (
     if not defined ARG3 goto :fail
@@ -220,10 +220,30 @@ echo(
 echo Server stopped.
 exit /b 0
 
-:show_status
+:watch_status
+timeout /t 0 /nobreak >nul 2>&1 || (call :status_fetch & call :status_print & exit /b 0)
+set "SHOWN="
+:watch_loop
+call :load_config
+call :status_fetch
+call :autostart_enabled
+set "NOW=!HEALTH!|%AUTO%|%CFG_PORT%|%CFG_IDLE_GRACE_SECONDS%|%CFG_MEMORY%"
+if not "!NOW!"=="!SHOWN!" (
+    set "SHOWN=!NOW!"
+    cls
+    call :status_print
+)
+powershell -NoProfile -Command "$e=[DateTime]::Now.AddSeconds(1); while([DateTime]::Now -lt $e){ if([Console]::KeyAvailable){ [void][Console]::ReadKey($true); exit 1 }; Start-Sleep -Milliseconds 50 }"
+if errorlevel 1 exit /b 0
+goto :watch_loop
+
+:status_fetch
 call :server_pid
 set "HEALTH="
 if defined PID for /f "delims=" %%h in ('curl -fs -m 2 "http://127.0.0.1:%CFG_PORT%/api/health" 2^>nul') do set "HEALTH=%%h"
+exit /b 0
+
+:status_print
 if not defined HEALTH (
     echo Server %RED%down%RESET%
     goto :status_autostart
@@ -294,7 +314,7 @@ choice /c 12340 /n /m "  Choose 0-4: "
 set "PICK=%ERRORLEVEL%"
 if "%PICK%"=="5" cls & exit /b 0
 if "%PICK%"=="4" goto :settings_menu
-if "%PICK%"=="3" cls & call :show_status & pause >nul & goto :menu
+if "%PICK%"=="3" call :watch_status & goto :menu
 if "%PICK%"=="2" (
     if "%AUTO%"=="on" (call :autostart_off >nul) else (
         call :autostart_on >nul || (echo %RED%could not write the Run key%RESET%& pause >nul)

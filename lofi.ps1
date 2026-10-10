@@ -167,9 +167,7 @@ function Stop-Server {
     Write-Host 'Server stopped.'
 }
 
-function Show-Status {
-    $id = Get-ServerPid
-    $h = Get-Health
+function Show-Status($h = (Get-Health)) {
     if ($h) {
         Write-Host 'Server ' -NoNewline; Write-Host 'up' -ForegroundColor Green
         foreach ($st in $h.stations.PSObject.Properties) {
@@ -182,6 +180,21 @@ function Show-Status {
     Write-AutostartState
     $cfg = Read-Config
     Write-Host "Port $($cfg.PORT)   Idle grace second $($cfg.IDLE_GRACE_SECONDS)   Memory $($cfg.MEMORY)" -ForegroundColor DarkGray
+}
+
+function Watch-Status {
+    if ([Console]::IsInputRedirected) { Show-Status; return }
+    $shown = $null
+    while ($true) {
+        $h = Get-Health
+        $cfg = Read-Config
+        $now = "$($h | ConvertTo-Json -Compress -Depth 4)|$(Test-Autostart)|$($cfg.Values -join ',')"
+        if ($now -ne $shown) { $shown = $now; Clear-Host; Show-Status $h }
+        for ($t = 0; $t -lt 10; $t++) {
+            if ([Console]::KeyAvailable) { [void][Console]::ReadKey($true); return }
+            Start-Sleep -Milliseconds 100
+        }
+    }
 }
 
 # Autostart
@@ -301,7 +314,7 @@ function Show-Menu {
                     if ($running) { Stop-Server } else { Start-Server; if (-not $script:StartOk) { Wait-Key } }
                 }
                 1 { if (Test-Autostart) { Set-AutostartOff *> $null } else { Set-AutostartOn *> $null } }
-                2 { Clear-Host; Show-Status; Wait-Key }
+                2 { Watch-Status }
                 3 { Show-SettingsMenu }
                 4 { Clear-Host; return }
             }
@@ -322,7 +335,7 @@ try {
             elseif ($Key -ceq 'off') { Set-AutostartOff }
             else { Write-AutostartState }
         }
-        'status' { Show-Status }
+        'status' { Watch-Status }
         'config' { Show-Config }
         'set'    {
             if ($ArgCount -ne 3) { exit 1 }

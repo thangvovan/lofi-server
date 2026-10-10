@@ -183,6 +183,15 @@ show_status() {
   echo "${GRAY}Port $(conf_get PORT)   Idle grace second $(conf_get IDLE_GRACE_SECONDS)   Memory $(conf_get MEMORY)${RESET}"
 }
 
+watch_status() {
+  local out shown="" key
+  while :; do
+    out=$(show_status)
+    if [ "$out" != "$shown" ]; then shown=$out; clear; echo "$out"; fi
+    if read -rsn1 -t 1 key; then return; fi
+  done
+}
+
 # Autostart
 PLIST="$HOME/Library/LaunchAgents/com.lofi.server.plist"
 SERVICE="$HOME/.config/systemd/user/lofi.service"
@@ -347,7 +356,7 @@ menu() {
       1)
         if autostart_enabled; then autostart_off >/dev/null 2>&1
         else out=$(autostart_on 2>&1) || { echo "${RED}$out${RESET}"; wait_key; }; fi ;;
-      2) clear; show_status; wait_key ;;
+      2) watch_status ;;
       3) settings_menu ;;
       4) clear; return ;;
     esac
@@ -364,7 +373,7 @@ case "${1:-}" in
       off) autostart_off ;;
       *) if autostart_enabled; then echo "Autostart: ${GREEN}on${RESET}"; else echo "Autostart: ${RED}off${RESET}"; fi ;;
     esac ;;
-  status) show_status ;;
+  status) watch_status ;;
   config) show_config ;;
   set) [ $# -eq 3 ] || { exit 1; }; conf_set "$2" "$3" ;;
   *) menu ;;
